@@ -113,8 +113,9 @@ public class JobClaimRepository {
    * Records a failed attempt (fenced like {@link #complete}). Retries go back to PENDING with
    * {@code run_at = now() + retryDelay} while attempts remain; otherwise the job becomes DEAD.
    *
-   * <p>PLACEHOLDER policy for phase 3: the caller passes a fixed delay. Phase 4 replaces it with
-   * exponential backoff + jitter and copies DEAD jobs to the dead-letter table.
+   * <p>The caller computes {@code retryDelay} (exponential backoff with jitter). When the job dies,
+   * it is copied to {@code dead_letter_jobs} in the same transaction, so a DEAD job always has its
+   * DLQ record and vice versa.
    *
    * @return the new status, or empty if the worker no longer owned the job
    */
@@ -154,7 +155,25 @@ public class JobClaimRepository {
       return Optional.empty();
     }
     finishAttempt(jobId, attempt, outcome, errorMessage, stackTrace);
-    return Optional.of(JobStatus.valueOf(status.get(0)));
+    JobStatus newStatus = JobStatus.valueOf(status.get(0));
+    if (newStatus == JobStatus.DEAD) {
+      copyToDeadLetterQueue(
+          jobId, retryable ? DeadReason.MAX_ATTEMPTS_EXCEEDED : DeadReason.NON_RETRYABLE);
+    }
+    return Optional.of(newStatus);
+  }
+
+  private void copyToDeadLetterQueue(UUID jobId, String reason) {
+    jdbc.update(
+        """
+        INSERT INTO dead_letter_jobs
+          (job_id, queue_name, type, payload, priority, attempts, max_attempts, last_error,
+           reason, job_created_at)
+        SELECT id, queue_name, type, payload, priority, attempts, max_attempts, last_error,
+               :reason, created_at
+        FROM jobs WHERE id = :id
+        """,
+        new MapSqlParameterSource().addValue("id", jobId).addValue("reason", reason));
   }
 
   private void finishAttempt(

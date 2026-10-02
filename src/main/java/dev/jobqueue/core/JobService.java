@@ -1,6 +1,7 @@
 package dev.jobqueue.core;
 
 import dev.jobqueue.handler.HandlerRegistry;
+import dev.jobqueue.retry.RetryPolicies;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -10,16 +11,30 @@ public class JobService {
 
   private final JobRepository repo;
   private final HandlerRegistry registry;
+  private final RetryPolicies policies;
 
-  public JobService(JobRepository repo, HandlerRegistry registry) {
+  public JobService(JobRepository repo, HandlerRegistry registry, RetryPolicies policies) {
     this.repo = repo;
     this.registry = registry;
+    this.policies = policies;
   }
 
   public EnqueueResult enqueue(NewJob newJob) {
     // Reject typos up front instead of letting the job fail later with "no handler".
     if (!registry.isKnown(newJob.type())) {
       throw new UnknownJobTypeException(newJob.type(), registry.types());
+    }
+    if (newJob.maxAttempts() == null) {
+      newJob =
+          new NewJob(
+              newJob.queueName(),
+              newJob.type(),
+              newJob.payload(),
+              newJob.priority(),
+              policies.resolve(newJob.type()).maxAttempts(),
+              newJob.runAt(),
+              newJob.delaySeconds(),
+              newJob.idempotencyKey());
     }
     var id = repo.insertIfAbsent(newJob);
     if (id.isPresent()) {

@@ -12,7 +12,7 @@ public record NewJob(
     String type,
     JsonNode payload,
     int priority,
-    int maxAttempts,
+    Integer maxAttempts,
     OffsetDateTime runAt,
     long delaySeconds,
     String idempotencyKey) {}

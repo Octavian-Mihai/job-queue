@@ -60,7 +60,7 @@ public class JobController {
             req.type(),
             payload,
             req.priority() == null ? 0 : req.priority(),
-            req.maxAttempts() == null ? 5 : req.maxAttempts(),
+            req.maxAttempts(),
             req.runAt(),
             req.delaySeconds() == null ? 0 : req.delaySeconds(),
             idempotencyKey);

@@ -16,6 +16,28 @@ jobqueue:
   roles: ${JOBQUEUE_ROLES:api,worker}
   worker-id: ${JOBQUEUE_WORKER_ID:}
 
+  # Retry policy. Delay after failed attempt n is uniform in [0, min(max-delay, base-delay * multiplier^(n-1))].
+  retry:
+    defaults:
+      base-delay: 2s
+      multiplier: 2.0
+      max-delay: 5m
+      max-attempts: 5
+      execution-timeout: 5m
+    types:
+      send-email:
+        base-delay: 500ms
+        max-delay: 30s
+      deliver-webhook:
+        base-delay: 1s
+        max-delay: 1m
+        max-attempts: 8
+        execution-timeout: 30s
+      generate-report:
+        max-attempts: 3
+        base-delay: 5s
+        execution-timeout: 10m
+
 management:
   endpoints:
     web:

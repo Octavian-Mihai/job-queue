@@ -21,7 +21,9 @@ public record CreateJobRequest(
             description =
                 "Run no earlier than this instant (ISO-8601). Exclusive with delaySeconds")
         OffsetDateTime runAt,
-    @Min(1) @Max(100) @Schema(description = "Total attempts before dead-lettering; default 5")
+    @Min(1)
+        @Max(100)
+        @Schema(description = "Total attempts before dead-lettering; default is per job type")
         Integer maxAttempts) {
 
   @JsonIgnore
