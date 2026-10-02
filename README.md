@@ -7,9 +7,8 @@ in Java 21 + Spring Boot. Workers claim jobs with `SELECT ... FOR UPDATE SKIP LO
 heartbeat-extended leases, retry with exponential backoff and jitter, and dead-letter jobs that
 exhaust their attempts. The goal is correctness under failure, backed by measured results.
 
-> **Status: phase 6 of 9 (metrics and dashboard).** Everything through crash recovery plus
-> Prometheus metrics, a Grafana dashboard and `GET /stats`. The full test matrix (7) and load
-> tests (8) come next.
+> **Status: phase 7 of 9 (full test suite).** Queue, retries, DLQ, crash recovery, metrics and the
+> complete test matrix with a coverage gate. Load tests and results (8) come next.
 
 ## Architecture
 
@@ -215,3 +214,29 @@ compose DNS, so `--scale worker=N` just works). Logs are one JSON object per lin
 
 Queue gauges are computed from the database on scrape (cached 2 s); `GROUP BY status` scans `jobs`,
 which is fine here but is one of the things to replace at scale (see limitations).
+
+## Testing
+
+Everything runs against a real PostgreSQL via Testcontainers (no H2). `./mvnw verify` runs the unit and
+integration tests, then packages the jar and runs the real-process test, then the coverage gate.
+
+| Requirement | Test |
+|---|---|
+| Backoff/jitter math, state transitions, retry classification | `BackoffPolicyTest`, `JobStatusTest`, `FailureClassifierTest`, `RetryPoliciesTest` |
+| 8 workers, 5,000 jobs: all terminal, never executed concurrently | `MultiWorkerTest` (8 independent worker loops; asserts 1 execution and 1 closed attempt per job, 0 overlaps, all 8 workers used) |
+| Mixed outcomes under 8 workers lose nothing, leave no open attempt | `MultiWorkerTest` |
+| A worker process killed mid-job: job reclaimed and finished elsewhere | `CrashRecoveryIT` (two `java -jar` processes, one `SIGKILL`ed) and `WorkerLifecycleTest` |
+| Fencing: stale worker rejected | `FencingTest` (zombie complete/fail, same-worker-id stale attempt, late report after requeue/finish) |
+| Retries; always-failing job ends in DLQ with full attempt history; replay | `WorkerLoopTest`, `ClaimRepositoryTest`, `DlqApiTest` (incl. 16 concurrent replays of one entry) |
+| Idempotency: concurrent submissions with one key create one job | `EnqueueApiTest` (32 threads) |
+| Graceful shutdown: in-flight jobs finish or leases are released | `GracefulShutdownTest` |
+| Heartbeats, reaper, crash vs. graceful accounting | `LeaseRepositoryTest`, `WorkerLifecycleTest` |
+| Metrics and `/stats` | `JobMetricsTest`, `MetricsAndStatsTest` |
+
+Several of these were also checked by mutation (temporarily removing `SKIP LOCKED`, the attempt-number
+fence, the heartbeat, or the replay guard and confirming the corresponding tests fail).
+
+**Coverage gate:** the build fails below 80% line / 70% branch coverage on the queue itself
+(`core`, `worker`, `retry`, `handler`). Measured at the time of writing: 95.5% lines, 86.0% branches.
+The API controllers, config and metrics glue are tested but not part of the gate. The gate is verified
+to fail when the threshold is raised, so it cannot pass vacuously.
