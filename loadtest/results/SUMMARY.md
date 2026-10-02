@@ -1,3 +1,11 @@
+**Headline (median of 3 runs per cell; details and ranges below)**
+
+| Workers | Enqueue throughput (burst, jobs/s) | Enqueue p95 (burst, ms) | End-to-end p50 / p95 at 100 jobs/s (s) | Processing capacity (jobs/min) | per worker |
+|---|---|---|---|---|---|
+| 1 | 488 | 156 | 0.06 / 0.10 | 8,830 | 8,830 |
+| 2 | 450 | 542 | 0.06 / 0.10 | 18,074 | 9,037 |
+| 4 | 489 | 168 | 0.06 / 0.09 | 34,500 | 8,625 |
+
 **Burst: 500 jobs/s offered for 30 s (enqueue and processing share one Postgres)**
 
 | Workers | Runs | enqueue/s (achieved) | enqueue p95 (ms) | dropped by k6 | jobs/min processed | e2e p50 (s) | e2e p95 (s) |
@@ -48,4 +56,4 @@
 |---|---|---|---|---|---|---|---|---|
 | 4 | 3 | 6722 [6722-6722] | 6722 [6722-6722] | 0 [0-0] | 8 [7-8] | 8 [8-8] | 7.9 [7.7-9.8] | 15.3 [15.3-19.1] |
 
-Zero-lost-jobs verification: 45 runs, ALL PASSED.
+Zero-lost-jobs verification: 42 processing runs (422,405 jobs: every accepted job reached a terminal state, none dead-lettered, one email per succeeded send-email job) and 3 enqueue-only runs (every 201 was stored). ALL PASSED.

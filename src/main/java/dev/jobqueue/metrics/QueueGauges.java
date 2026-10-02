@@ -7,7 +7,6 @@ import dev.jobqueue.worker.InFlightJobs;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Duration;
-import java.util.function.Supplier;
 import org.springframework.stereotype.Component;
 
 /**
@@ -60,10 +59,5 @@ public class QueueGauges {
       }
     }
     return cached;
-  }
-
-  /** For tests. */
-  Supplier<QueueStats> supplier() {
-    return this::snapshot;
   }
 }

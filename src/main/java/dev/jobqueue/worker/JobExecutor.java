@@ -64,7 +64,7 @@ public class JobExecutor {
       execute(job, handle);
     } catch (RuntimeException e) {
       // Recording the outcome failed (e.g. DB down). The job stays RUNNING until its lease
-      // expires and the reaper (phase 5) returns it to the queue: at-least-once, nothing lost.
+      // expires and the reaper returns it to the queue: at-least-once, nothing lost.
       log.error("could not record outcome of job {} attempt {}", job.id(), job.attempts(), e);
     } finally {
       inFlight.unregister(handle);
@@ -147,7 +147,7 @@ public class JobExecutor {
           new JobContext(
               job.id(), job.type(), job.attempts(), job.maxAttempts(), job.payload(), workerId));
       return new Result(null, false);
-    } catch (Exception e) { // includes InterruptedException (timeout, or shutdown in phase 5)
+    } catch (Exception e) { // includes InterruptedException (timeout, shutdown, lost lease)
       return new Result(e, timedOut.get());
     } finally {
       if (!guard.cancel(false)) {

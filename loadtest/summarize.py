@@ -36,7 +36,26 @@ def table(title, scenario, cols, note=""):
     return "\n".join(out)
 
 
+def median_of(scenario, workers, key):
+    rs = runs.get((scenario, workers), [])
+    return statistics.median([r[key] for r in rs]) if rs else None
+
+
+def headline():
+    rows = ["**Headline (median of 3 runs per cell; details and ranges below)**", "",
+            "| Workers | Enqueue throughput (burst, jobs/s) | Enqueue p95 (burst, ms) | End-to-end p50 / p95 at 100 jobs/s (s) | Processing capacity (jobs/min) | per worker |",
+            "|---|---|---|---|---|---|"]
+    for w in (1, 2, 4):
+        rows.append(
+            f"| {w} | {median_of('burst', w, 'enqueue_throughput_per_s'):.0f} | "
+            f"{median_of('burst', w, 'enqueue_p95_ms'):.0f} | "
+            f"{median_of('steady', w, 'e2e_p50_s'):.2f} / {median_of('steady', w, 'e2e_p95_s'):.2f} | "
+            f"{median_of('drain', w, 'jobs_per_min'):,.0f} | {median_of('drain', w, 'jobs_per_min_per_worker'):,.0f} |")
+    return "\n".join(rows)
+
+
 parts = [
+    headline(),
     table("Burst: 500 jobs/s offered for 30 s (enqueue and processing share one Postgres)", "burst", [
         ("enqueue/s (achieved)", "enqueue_throughput_per_s", "{:.0f}"),
         ("enqueue p95 (ms)", "enqueue_p95_ms", "{:.0f}"),
@@ -87,9 +106,14 @@ parts = [
 failed = [
     f"{s}-w{w}" for (s, w), rs in runs.items() for r in rs if not r.get("verification_passed", False)
 ]
+n_enq = sum(len(v) for (s, w), v in runs.items() if s == "enqonly")
+n_proc = sum(len(v) for (s, w), v in runs.items() if s != "enqonly")
+jobs_proc = sum(r.get("jobs_in_db") or r.get("jobs", 0) for (s, w), v in runs.items() if s != "enqonly" for r in v)
 parts.append(
-    f"Zero-lost-jobs verification: {sum(len(v) for v in runs.values())} runs, "
-    f"{'ALL PASSED' if not failed else 'FAILED: ' + ', '.join(failed)}."
+    f"Zero-lost-jobs verification: {n_proc} processing runs ({jobs_proc:,} jobs: every accepted job reached a "
+    f"terminal state, none dead-lettered, one email per succeeded send-email job) and {n_enq} enqueue-only runs "
+    f"(every 201 was stored). "
+    + ("ALL PASSED." if not failed else "FAILED: " + ", ".join(failed))
 )
 text = "\n\n".join(parts) + "\n"
 open("loadtest/results/SUMMARY.md", "w").write(text)
