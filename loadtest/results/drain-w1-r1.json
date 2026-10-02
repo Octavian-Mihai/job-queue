@@ -1,0 +1,17 @@
+{
+  "name": "drain-w1-r1",
+  "workers": 1,
+  "jobs": 20000,
+  "succeeded": 20000,
+  "dead": 0,
+  "window_s": 133.8,
+  "jobs_per_min": 8969,
+  "jobs_per_min_per_worker": 8969,
+  "emails_in_outbox": 20000,
+  "distinct_workers": 1,
+  "cpu_percent_mid_run": {
+    "worker": 15.5,
+    "postgres": 16.3
+  },
+  "verification_passed": true
+}

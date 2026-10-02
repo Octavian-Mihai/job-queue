@@ -35,7 +35,7 @@ public record WorkerProperties(
     concurrency = concurrency > 0 ? concurrency : 8;
     batchSize = batchSize > 0 ? batchSize : 10;
     pollInterval = pollInterval != null ? pollInterval : Duration.ofMillis(200);
-    maxPollInterval = maxPollInterval != null ? maxPollInterval : Duration.ofSeconds(5);
+    maxPollInterval = maxPollInterval != null ? maxPollInterval : Duration.ofSeconds(1);
     leaseDuration = leaseDuration != null ? leaseDuration : Duration.ofSeconds(30);
     heartbeatInterval = heartbeatInterval != null ? heartbeatInterval : leaseDuration.dividedBy(3);
     reaperInterval = reaperInterval != null ? reaperInterval : Duration.ofSeconds(5);

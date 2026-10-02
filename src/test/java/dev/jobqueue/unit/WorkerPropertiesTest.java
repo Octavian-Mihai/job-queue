@@ -34,6 +34,8 @@ class WorkerPropertiesTest {
     var p = props(null, null);
     assertThat(p.concurrency()).isEqualTo(8);
     assertThat(p.reaperInterval()).isEqualTo(Duration.ofSeconds(5));
+    // a long idle ceiling adds that much latency to the first job after a quiet spell
+    assertThat(p.maxPollInterval()).isEqualTo(Duration.ofSeconds(1));
     assertThat(p.reaperBatchSize()).isEqualTo(100);
     assertThat(p.shutdownGracePeriod()).isEqualTo(Duration.ofSeconds(30));
   }

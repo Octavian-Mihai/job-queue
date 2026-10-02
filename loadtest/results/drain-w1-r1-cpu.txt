@@ -1,0 +1,15 @@
+job_queue-worker-1 15.53%
+job_queue-api-1 0.23%
+job_queue-grafana-1 0.03%
+job_queue-postgres-1 16.29%
+job_queue-prometheus-1 0.00%
+shortener-api-1 0.00%
+shortener-api-2 0.00%
+shortener-grafana-1 0.07%
+shortener-nginx-1 0.00%
+shortener-prometheus-1 0.00%
+shortener-consumer-1 0.19%
+shortener-postgres-1 1.31%
+shortener-redis-1 1.39%
+shortener-kafka-1 1.18%
+juice-shop 0.27%

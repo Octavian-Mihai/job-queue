@@ -51,6 +51,10 @@ public class WorkerLoop implements SmartLifecycle {
 
   private final java.util.concurrent.CountDownLatch stopSignal =
       new java.util.concurrent.CountDownLatch(1);
+
+  /** Released whenever a job finishes, so a saturated poller refills the slot immediately. */
+  private final Semaphore slotFreed = new Semaphore(0);
+
   private volatile boolean running;
   private Thread poller;
 
@@ -114,16 +118,32 @@ public class WorkerLoop implements SmartLifecycle {
       }
       try {
         // claimed == -1 means all slots busy: re-check soon rather than backing off.
-        // Waiting on the stop signal (not Thread.sleep) lets stop() end the wait without
-        // interrupting the poller, which could otherwise land in the middle of a JDBC call.
-        if (stopSignal.await(
-            (claimed < 0 ? props.pollInterval() : idleSleep).toMillis(), TimeUnit.MILLISECONDS)) {
+        if (awaitNextPoll(claimed < 0 ? props.pollInterval() : idleSleep)) {
           return;
         }
       } catch (InterruptedException e) {
         return;
       }
     }
+  }
+
+  /**
+   * Waits up to {@code max} before the next poll, but wakes early when a job finishes (a slot
+   * freed) or when stop() is called. Without the early wake-up a saturated worker would refill its
+   * slots only once per poll interval, capping throughput at {@code concurrency / pollInterval}
+   * jobs per second however fast the handlers are: a bug the load test found.
+   *
+   * <p>Waiting on a signal instead of {@code Thread.sleep} also lets stop() end the wait without
+   * interrupting the poller, which could otherwise land in the middle of a JDBC call.
+   *
+   * @return true if the worker is stopping
+   */
+  private boolean awaitNextPoll(Duration max) throws InterruptedException {
+    if (stopSignal.getCount() > 0) {
+      slotFreed.tryAcquire(max.toNanos(), TimeUnit.NANOSECONDS);
+      slotFreed.drainPermits();
+    }
+    return stopSignal.getCount() == 0;
   }
 
   /**
@@ -159,6 +179,7 @@ public class WorkerLoop implements SmartLifecycle {
             executor.run(job);
           } finally {
             slots.release();
+            slotFreed.release();
           }
         });
   }
@@ -183,6 +204,7 @@ public class WorkerLoop implements SmartLifecycle {
     }
     running = false; // 1. stop claiming
     stopSignal.countDown();
+    slotFreed.release(); // wake the poller if it is waiting
     try {
       // Join the poller BEFORE closing the job executor: a poll already in progress may have just
       // claimed jobs, and they must still be dispatched (and then drained below), not orphaned.

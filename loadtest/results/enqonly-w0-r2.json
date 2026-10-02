@@ -1,0 +1,14 @@
+{
+  "name": "enqonly-w0-r2",
+  "workers": 0,
+  "jobs_accepted_201": 29544,
+  "jobs_rejected": 0,
+  "dropped_iterations": 456,
+  "enqueue_throughput_per_s": 1477.1,
+  "enqueue_p50_ms": 0.7,
+  "enqueue_p95_ms": 13.9,
+  "enqueue_p99_ms": 233.8,
+  "jobs_in_db": 29544,
+  "lost_jobs": 0,
+  "verification_passed": true
+}
