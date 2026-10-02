@@ -11,7 +11,9 @@ import org.testcontainers.containers.PostgreSQLContainer;
  * {@code @Container} here: it stops the container after each test class while Spring keeps the
  * cached context (and its connection pool) alive, so later classes would hit a dead database.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+    webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+    properties = "jobqueue.roles=api") // no background worker unless a test opts in
 public abstract class PostgresTestBase {
 
   @ServiceConnection

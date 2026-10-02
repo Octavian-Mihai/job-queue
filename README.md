@@ -7,8 +7,11 @@ in Java 21 + Spring Boot. Workers claim jobs with `SELECT ... FOR UPDATE SKIP LO
 heartbeat-extended leases, retry with exponential backoff and jitter, and dead-letter jobs that
 exhaust their attempts. The goal is correctness under failure, backed by measured results.
 
-> **Status: phase 2 of 9 (enqueue API).** Jobs can be submitted (idempotently), inspected, listed
-> and cancelled. Nothing executes them yet: workers arrive in phase 3. Sections grow as phases land.
+> **Status: phase 3 of 9 (claim/execute loop).** Jobs can be submitted, claimed by concurrent
+> workers and executed by three demo handlers. Retry backoff and the DLQ (phase 4) and
+> leases/heartbeats/reaper/graceful shutdown (phase 5) are not built yet: a failed job currently
+> retries after a fixed 1 s placeholder delay, and a job whose worker crashes stays `RUNNING`.
+> Sections grow as phases land.
 
 ## Architecture
 
@@ -87,3 +90,36 @@ concurrent requests serialize on the index: one inserts (201), the other waits f
 nothing, and reads the winner's row (200). There is no check-then-insert window. A test fires 32
 simultaneous requests with one key and asserts exactly one row and one 201. A repeated key returns
 the *existing* job even if the new request body differs (it does not compare payloads).
+
+## Workers
+
+A worker (`JOBQUEUE_ROLES=worker`, or both roles in one process) runs one poller thread that claims
+jobs in batches and runs each on a virtual thread. A semaphore bounds in-flight jobs, and the poller
+never claims more than it has free slots. When idle it backs off from `poll-interval` up to
+`max-poll-interval`; a full batch triggers an immediate re-poll to drain a backlog.
+
+The claim is one SQL statement (`JobClaimRepository.claim`): `SELECT ... FOR UPDATE SKIP LOCKED`
+picks and locks runnable rows in priority order, an `UPDATE` marks them `RUNNING` with an owner,
+lease and incremented `attempts`, and an `INSERT` records the `job_attempts` row, all atomically.
+Completion and failure updates are **fenced** on `locked_by` and the attempt number.
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `JOBQUEUE_WORKER_CONCURRENCY` | 8 | max jobs running at once per process |
+| `JOBQUEUE_WORKER_BATCH_SIZE` | 10 | max jobs per claim |
+| `JOBQUEUE_WORKER_POLL_INTERVAL` | 200ms | poll period while busy |
+| `JOBQUEUE_WORKER_MAX_POLL_INTERVAL` | 5s | idle backoff ceiling |
+| `JOBQUEUE_WORKER_LEASE_DURATION` | 30s | claim validity (heartbeats arrive in phase 5) |
+| `JOBQUEUE_WORKER_QUEUES` | all | comma-separated queue names to consume |
+
+### Demo handlers
+
+| Type | Behaviour | Payload |
+|---|---|---|
+| `send-email` | simulated SMTP, random transient failures; **idempotent** via `email_outbox` keyed by job id | `to`, `subject`, `simulate` (`random`/`ok`/`transient`/`after-send`) |
+| `generate-report` | burns CPU then sleeps | `cpuMs`, `sleepMs` |
+| `deliver-webhook` | simulated HTTP: 70% ok, 20% transient (503/timeout), 10% permanent (400/410) | `url`, `simulate` (`random`/`ok`/`transient`/`permanent`) |
+
+Add a handler by implementing `JobHandler` as a Spring bean. Throw `RetryableException` or
+`NonRetryableException` to classify failures; anything else is retried. Enqueueing an unknown
+`type` is rejected with 400.

@@ -69,14 +69,14 @@ class EnqueueApiTest extends PostgresTestBase {
 
   @Test
   void missingPayloadBecomesEmptyObject() {
-    var job = enqueue(Map.of("type", "t")).getBody();
+    var job = enqueue(Map.of("type", "send-email")).getBody();
     assertThat(job.get("payload").isObject()).isTrue();
     assertThat(job.get("payload")).isEmpty();
   }
 
   @Test
   void delaySecondsSchedulesInTheFutureUsingDbClock() {
-    var job = enqueue(Map.of("type", "t", "delaySeconds", 3600)).getBody();
+    var job = enqueue(Map.of("type", "send-email", "delaySeconds", 3600)).getBody();
     Boolean future =
         jdbc.queryForObject(
             "SELECT run_at > now() + interval '59 minutes' AND run_at < now() + interval '61 minutes'"
@@ -88,7 +88,7 @@ class EnqueueApiTest extends PostgresTestBase {
 
   @Test
   void explicitRunAtIsHonoured() {
-    var job = enqueue(Map.of("type", "t", "runAt", "2035-01-01T00:00:00Z")).getBody();
+    var job = enqueue(Map.of("type", "send-email", "runAt", "2035-01-01T00:00:00Z")).getBody();
     assertThat(job.get("runAt").asText()).startsWith("2035-01-01T00:00:00");
   }
 
@@ -106,8 +106,20 @@ class EnqueueApiTest extends PostgresTestBase {
   }
 
   @Test
+  void unknownJobTypeIsRejectedWithKnownTypesListed() {
+    var res = enqueue(Map.of("type", "send-emial"));
+    assertThat(res.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    assertThat(res.getBody().get("detail").asText())
+        .contains("send-emial")
+        .contains("send-email")
+        .contains("deliver-webhook");
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM jobs", Integer.class)).isZero();
+  }
+
+  @Test
   void delayAndRunAtAreMutuallyExclusive() {
-    var res = enqueue(Map.of("type", "t", "delaySeconds", 5, "runAt", "2035-01-01T00:00:00Z"));
+    var res =
+        enqueue(Map.of("type", "send-email", "delaySeconds", 5, "runAt", "2035-01-01T00:00:00Z"));
     assertThat(res.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     assertThat(res.getBody().get("errors").toString()).contains("mutually exclusive");
   }
@@ -125,14 +137,14 @@ class EnqueueApiTest extends PostgresTestBase {
 
   @Test
   void tooLongIdempotencyKeyIsRejected() {
-    var res = post("/jobs", Map.of("type", "t"), "k".repeat(256));
+    var res = post("/jobs", Map.of("type", "send-email"), "k".repeat(256));
     assertThat(res.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
   }
 
   @Test
   void repeatedIdempotencyKeyReturnsSameJobWith200() {
-    var first = post("/jobs", Map.of("type", "t"), "key-1");
-    var second = post("/jobs", Map.of("type", "t"), "key-1");
+    var first = post("/jobs", Map.of("type", "send-email"), "key-1");
+    var second = post("/jobs", Map.of("type", "send-email"), "key-1");
 
     assertThat(first.getStatusCode()).isEqualTo(HttpStatus.CREATED);
     assertThat(second.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -142,8 +154,8 @@ class EnqueueApiTest extends PostgresTestBase {
 
   @Test
   void differentKeysCreateDifferentJobs() {
-    var a = post("/jobs", Map.of("type", "t"), "a");
-    var b = post("/jobs", Map.of("type", "t"), "b");
+    var a = post("/jobs", Map.of("type", "send-email"), "a");
+    var b = post("/jobs", Map.of("type", "send-email"), "b");
     assertThat(a.getBody().get("id")).isNotEqualTo(b.getBody().get("id"));
   }
 
@@ -158,7 +170,7 @@ class EnqueueApiTest extends PostgresTestBase {
           pool.submit(
               () -> {
                 start.await();
-                return post("/jobs", Map.of("type", "t"), "race-key");
+                return post("/jobs", Map.of("type", "send-email"), "race-key");
               }));
     }
     start.countDown();
@@ -185,7 +197,7 @@ class EnqueueApiTest extends PostgresTestBase {
 
   @Test
   void getReturnsJobWithAttemptHistory() {
-    var job = enqueue(Map.of("type", "t")).getBody();
+    var job = enqueue(Map.of("type", "send-email")).getBody();
     String id = job.get("id").asText();
     jdbc.update(
         "INSERT INTO job_attempts (job_id, attempt_number, worker_id, outcome, error_message)"
@@ -215,9 +227,9 @@ class EnqueueApiTest extends PostgresTestBase {
   @Test
   void listFiltersAndPaginates() {
     for (int i = 0; i < 5; i++) {
-      enqueue(Map.of("type", "email", "queue", "q1"));
+      enqueue(Map.of("type", "send-email", "queue", "q1"));
     }
-    enqueue(Map.of("type", "report", "queue", "q2"));
+    enqueue(Map.of("type", "generate-report", "queue", "q2"));
 
     var all = http.getForEntity("/jobs?size=4", JsonNode.class).getBody();
     assertThat(all.get("total").asInt()).isEqualTo(6);
@@ -226,7 +238,7 @@ class EnqueueApiTest extends PostgresTestBase {
     var page2 = http.getForEntity("/jobs?size=4&page=1", JsonNode.class).getBody();
     assertThat(page2.get("items")).hasSize(2);
 
-    var byType = http.getForEntity("/jobs?type=report", JsonNode.class).getBody();
+    var byType = http.getForEntity("/jobs?type=generate-report", JsonNode.class).getBody();
     assertThat(byType.get("total").asInt()).isEqualTo(1);
 
     var byQueue = http.getForEntity("/jobs?queue=q1&status=PENDING", JsonNode.class).getBody();
@@ -246,7 +258,7 @@ class EnqueueApiTest extends PostgresTestBase {
 
   @Test
   void cancelPendingJobSucceedsOnlyOnce() {
-    String id = enqueue(Map.of("type", "t")).getBody().get("id").asText();
+    String id = enqueue(Map.of("type", "send-email")).getBody().get("id").asText();
 
     var first = post("/jobs/" + id + "/cancel", null, null);
     assertThat(first.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -259,7 +271,7 @@ class EnqueueApiTest extends PostgresTestBase {
 
   @Test
   void cancelRunningJobIsConflictAndLeavesItUntouched() {
-    String id = enqueue(Map.of("type", "t")).getBody().get("id").asText();
+    String id = enqueue(Map.of("type", "send-email")).getBody().get("id").asText();
     jdbc.update(
         "UPDATE jobs SET status='RUNNING', locked_by='w1', lease_expires_at = now() + interval '30 s'"
             + " WHERE id = ?::uuid",
