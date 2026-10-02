@@ -7,11 +7,10 @@ in Java 21 + Spring Boot. Workers claim jobs with `SELECT ... FOR UPDATE SKIP LO
 heartbeat-extended leases, retry with exponential backoff and jitter, and dead-letter jobs that
 exhaust their attempts. The goal is correctness under failure, backed by measured results.
 
-> **Status: phase 3 of 9 (claim/execute loop).** Jobs can be submitted, claimed by concurrent
-> workers and executed by three demo handlers. Retry backoff and the DLQ (phase 4) and
-> leases/heartbeats/reaper/graceful shutdown (phase 5) are not built yet: a failed job currently
-> retries after a fixed 1 s placeholder delay, and a job whose worker crashes stays `RUNNING`.
-> Sections grow as phases land.
+> **Status: phase 4 of 9 (retries, backoff, DLQ).** Jobs are enqueued, claimed by concurrent
+> workers, retried with exponential backoff + jitter, and dead-lettered with inspect/replay.
+> Leases, heartbeats, the reaper and graceful shutdown (phase 5) are not built yet: a job whose
+> worker crashes stays `RUNNING`. Sections grow as phases land.
 
 ## Architecture
 
@@ -123,3 +122,36 @@ Completion and failure updates are **fenced** on `locked_by` and the attempt num
 Add a handler by implementing `JobHandler` as a Spring bean. Throw `RetryableException` or
 `NonRetryableException` to classify failures; anything else is retried. Enqueueing an unknown
 `type` is rejected with 400.
+
+## Retries, timeouts and the dead-letter queue
+
+**Backoff** (`BackoffPolicy`, pure and unit-tested): after failed attempt *n* the delay is uniform in
+`[0, min(max-delay, base-delay x multiplier^(n-1))]`, i.e. exponential with **full jitter** and a
+cap. Jitter keeps jobs that failed together from retrying in synchronized waves; the trade-off is that a
+single retry can be nearly immediate. Settings are per job type with fallback to defaults
+(`jobqueue.retry.defaults.*`, `jobqueue.retry.types.<type>.*`: `base-delay`, `multiplier`,
+`max-delay`, `max-attempts`, `execution-timeout`) and are validated at startup. A request's
+`maxAttempts` overrides the type default.
+
+**Classification** (`FailureClassifier`): `NonRetryableException` goes straight to the DLQ,
+`RetryableException` retries, and **anything unknown is retried** (dead-lettering on an unanticipated
+bug would lose work a later attempt or a deploy may complete). The nearest classified exception in the
+cause chain wins.
+
+**Timeouts:** each attempt runs under its type's `execution-timeout`. On expiry the job's thread is
+interrupted and the attempt is recorded as `TIMED_OUT` (a failed, retryable attempt). A handler that
+ignores interruption keeps its slot busy (Java cannot kill a thread), which bounds concurrency and
+prevents an overlapping second run of the same job.
+
+**Dead-letter queue:** when a job dies (`NON_RETRYABLE` or `MAX_ATTEMPTS_EXCEEDED`) it is copied to
+`dead_letter_jobs` in the same transaction as the status change. Replay creates a **new job** with a
+fresh attempt cycle, marks the entry `replayed_at`/`replayed_job_id`, and leaves the original DEAD job
+as history. One atomic statement with `replayed_at IS NULL` + `FOR UPDATE SKIP LOCKED` makes
+double-replay impossible even under concurrent requests.
+
+```bash
+curl 'localhost:8080/dlq?type=deliver-webhook&reason=MAX_ATTEMPTS_EXCEEDED&replayed=false'
+curl localhost:8080/dlq/<id>                       # entry + full attempt history
+curl -XPOST localhost:8080/dlq/<id>/replay         # 201 new job, 409 if already replayed
+curl -XPOST 'localhost:8080/dlq/replay?type=deliver-webhook&limit=500'   # oldest first
+```

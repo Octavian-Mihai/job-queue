@@ -79,4 +79,37 @@ public final class TestHandlers {
       }
     }
   }
+
+  /** Fails while the gate is closed; succeeds once a test opens it (models "fix, then replay"). */
+  @Component
+  public static class Gate implements JobHandler {
+    public final java.util.concurrent.atomic.AtomicBoolean open =
+        new java.util.concurrent.atomic.AtomicBoolean();
+
+    @Override
+    public String type() {
+      return "test-gate";
+    }
+
+    @Override
+    public void handle(JobContext ctx) {
+      if (!open.get()) {
+        throw new RetryableException("downstream still broken");
+      }
+    }
+  }
+
+  /** Blocks (interruptibly) far longer than any test timeout. */
+  @Component
+  public static class Hang implements JobHandler {
+    @Override
+    public String type() {
+      return "test-hang";
+    }
+
+    @Override
+    public void handle(JobContext ctx) throws Exception {
+      Thread.sleep(60_000);
+    }
+  }
 }

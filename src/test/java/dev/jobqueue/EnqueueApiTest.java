@@ -68,6 +68,22 @@ class EnqueueApiTest extends PostgresTestBase {
   }
 
   @Test
+  void defaultMaxAttemptsComesFromThePerTypeRetryPolicy() {
+    assertThat(enqueue(Map.of("type", "deliver-webhook")).getBody().get("maxAttempts").asInt())
+        .isEqualTo(8);
+    assertThat(enqueue(Map.of("type", "generate-report")).getBody().get("maxAttempts").asInt())
+        .isEqualTo(3);
+    assertThat(enqueue(Map.of("type", "send-email")).getBody().get("maxAttempts").asInt())
+        .isEqualTo(5); // falls back to jobqueue.retry.defaults
+    assertThat(
+            enqueue(Map.of("type", "deliver-webhook", "maxAttempts", 2))
+                .getBody()
+                .get("maxAttempts")
+                .asInt())
+        .isEqualTo(2); // an explicit request value wins
+  }
+
+  @Test
   void missingPayloadBecomesEmptyObject() {
     var job = enqueue(Map.of("type", "send-email")).getBody();
     assertThat(job.get("payload").isObject()).isTrue();

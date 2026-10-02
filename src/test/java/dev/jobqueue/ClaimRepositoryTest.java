@@ -33,6 +33,7 @@ class ClaimRepositoryTest extends PostgresTestBase {
   @BeforeEach
   void clean() {
     jdbc.update("DELETE FROM jobs");
+    jdbc.update("DELETE FROM dead_letter_jobs"); // no FK to jobs, so not cascaded
   }
 
   private UUID insert(int priority, String runAtOffset, String queue) {
@@ -159,6 +160,108 @@ class ClaimRepositoryTest extends PostgresTestBase {
         .isEqualTo(total);
     assertThat(jdbc.queryForObject("SELECT count(*) FROM job_attempts", Integer.class))
         .isEqualTo(total);
+  }
+
+  @Test
+  void retryableFailureReturnsToPendingWithBackoffDelayAndNoDlqEntry() {
+    UUID id = insert(0, "-1 seconds");
+    Job job = repo.claim("w1", 1, LEASE, List.of()).get(0);
+
+    var status =
+        repo.fail(
+            id,
+            "w1",
+            job.attempts(),
+            true,
+            Duration.ofSeconds(10),
+            "FAILED_RETRYABLE",
+            "boom",
+            "trace");
+
+    assertThat(status).contains(JobStatus.PENDING);
+    var row = jdbc.queryForMap("SELECT * FROM jobs WHERE id = ?", id);
+    assertThat(row.get("locked_by")).isNull();
+    assertThat(row.get("lease_expires_at")).isNull();
+    assertThat(row.get("last_error")).isEqualTo("boom");
+    Boolean delayed =
+        jdbc.queryForObject(
+            "SELECT run_at > now() + interval '8 s' AND finished_at IS NULL FROM jobs WHERE id = ?",
+            Boolean.class,
+            id);
+    assertThat(delayed).isTrue();
+    assertThat(repo.claim("w2", 1, LEASE, List.of())).isEmpty(); // not runnable until run_at
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM dead_letter_jobs", Integer.class))
+        .isZero();
+  }
+
+  @Test
+  void lastAttemptFailureKillsTheJobAndWritesTheDlqEntryAtomically() {
+    UUID id = insert(7, "-1 seconds");
+    jdbc.update("UPDATE jobs SET max_attempts = 1, payload = '{\"k\":1}' WHERE id = ?", id);
+    Job job = repo.claim("w1", 1, LEASE, List.of()).get(0);
+
+    var status =
+        repo.fail(
+            id,
+            "w1",
+            job.attempts(),
+            true,
+            Duration.ofSeconds(1),
+            "FAILED_RETRYABLE",
+            "last",
+            null);
+
+    assertThat(status).contains(JobStatus.DEAD);
+    var dlq = jdbc.queryForMap("SELECT * FROM dead_letter_jobs WHERE job_id = ?", id);
+    assertThat(dlq.get("reason")).isEqualTo("MAX_ATTEMPTS_EXCEEDED");
+    assertThat(dlq.get("priority")).isEqualTo(7);
+    assertThat(dlq.get("attempts")).isEqualTo(1);
+    assertThat(dlq.get("last_error")).isEqualTo("last");
+    assertThat(dlq.get("payload").toString()).contains("\"k\"");
+    assertThat(dlq.get("replayed_at")).isNull();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT finished_at IS NOT NULL FROM jobs WHERE id = ?", Boolean.class, id))
+        .isTrue();
+  }
+
+  @Test
+  void nonRetryableFailureDiesEvenWithAttemptsLeft() {
+    UUID id = insert(0, "-1 seconds");
+    Job job = repo.claim("w1", 1, LEASE, List.of()).get(0);
+
+    var status =
+        repo.fail(
+            id,
+            "w1",
+            job.attempts(),
+            false,
+            Duration.ofSeconds(1),
+            "FAILED_NON_RETRYABLE",
+            "bad",
+            null);
+
+    assertThat(status).contains(JobStatus.DEAD);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reason FROM dead_letter_jobs WHERE job_id = ?", String.class, id))
+        .isEqualTo("NON_RETRYABLE");
+  }
+
+  @Test
+  void staleWorkerFailureIsIgnoredAndWritesNoDlqEntry() {
+    UUID id = insert(0, "-1 seconds");
+    jdbc.update("UPDATE jobs SET max_attempts = 1 WHERE id = ?", id);
+    Job job = repo.claim("owner", 1, LEASE, List.of()).get(0);
+
+    var status =
+        repo.fail(
+            id, "stale", job.attempts(), false, Duration.ZERO, "FAILED_NON_RETRYABLE", "x", null);
+
+    assertThat(status).isEmpty();
+    assertThat(statusOf(id)).isEqualTo("RUNNING");
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM dead_letter_jobs", Integer.class))
+        .isZero();
   }
 
   private String statusOf(UUID id) {
