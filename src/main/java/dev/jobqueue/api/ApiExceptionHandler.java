@@ -1,5 +1,6 @@
 package dev.jobqueue.api;
 
+import dev.jobqueue.core.DeadLetterNotFoundException;
 import dev.jobqueue.core.JobNotFoundException;
 import dev.jobqueue.core.JobStateConflictException;
 import dev.jobqueue.core.UnknownJobTypeException;
@@ -30,6 +31,11 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
   @ExceptionHandler(JobNotFoundException.class)
   ProblemDetail notFound(JobNotFoundException e) {
+    return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
+  }
+
+  @ExceptionHandler(DeadLetterNotFoundException.class)
+  ProblemDetail dlqNotFound(DeadLetterNotFoundException e) {
     return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
   }
 
