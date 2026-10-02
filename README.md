@@ -7,10 +7,9 @@ in Java 21 + Spring Boot. Workers claim jobs with `SELECT ... FOR UPDATE SKIP LO
 heartbeat-extended leases, retry with exponential backoff and jitter, and dead-letter jobs that
 exhaust their attempts. The goal is correctness under failure, backed by measured results.
 
-> **Status: phase 4 of 9 (retries, backoff, DLQ).** Jobs are enqueued, claimed by concurrent
-> workers, retried with exponential backoff + jitter, and dead-lettered with inspect/replay.
-> Leases, heartbeats, the reaper and graceful shutdown (phase 5) are not built yet: a job whose
-> worker crashes stays `RUNNING`. Sections grow as phases land.
+> **Status: phase 5 of 9 (leases, crash recovery, graceful shutdown).** Jobs are enqueued, claimed
+> by concurrent workers, retried with backoff, dead-lettered, and survive worker crashes and
+> deploys. Metrics/Grafana (phase 6), the full test matrix (7) and load tests (8) come next.
 
 ## Architecture
 
@@ -108,7 +107,10 @@ Completion and failure updates are **fenced** on `locked_by` and the attempt num
 | `JOBQUEUE_WORKER_BATCH_SIZE` | 10 | max jobs per claim |
 | `JOBQUEUE_WORKER_POLL_INTERVAL` | 200ms | poll period while busy |
 | `JOBQUEUE_WORKER_MAX_POLL_INTERVAL` | 5s | idle backoff ceiling |
-| `JOBQUEUE_WORKER_LEASE_DURATION` | 30s | claim validity (heartbeats arrive in phase 5) |
+| `JOBQUEUE_WORKER_LEASE_DURATION` | 30s | how long a claim stays valid without a heartbeat |
+| `JOBQUEUE_WORKER_HEARTBEAT_INTERVAL` | lease / 3 | how often in-flight leases are extended |
+| `JOBQUEUE_WORKER_REAPER_INTERVAL` | 5s | how often expired leases are reclaimed |
+| `JOBQUEUE_WORKER_SHUTDOWN_GRACE_PERIOD` | 30s | how long a stopping worker waits for in-flight jobs |
 | `JOBQUEUE_WORKER_QUEUES` | all | comma-separated queue names to consume |
 
 ### Demo handlers
@@ -155,3 +157,36 @@ curl localhost:8080/dlq/<id>                       # entry + full attempt histor
 curl -XPOST localhost:8080/dlq/<id>/replay         # 201 new job, 409 if already replayed
 curl -XPOST 'localhost:8080/dlq/replay?type=deliver-webhook&limit=500'   # oldest first
 ```
+
+## Leases, crash recovery and graceful shutdown
+
+**Lease + heartbeat.** A claim sets `lease_expires_at = now() + lease`. One batched `UPDATE` per
+worker every `lease/3` extends every in-flight job it still owns (`WHERE locked_by = me AND attempts
+= n`). If the heartbeat finds a claim is gone (the job was reclaimed), it interrupts that zombie
+handler instead of letting it burn work. An attempt whose execution timeout fired stops being
+heartbeated, so a handler that ignores interruption cannot hold its job forever.
+
+**Reaper.** Every worker runs it; there is no leader. One statement (`FOR UPDATE SKIP LOCKED`)
+finds `RUNNING` jobs with an expired lease, returns them to `PENDING` (or `DEAD` + DLQ when attempts
+are exhausted) and closes their attempt row as `LEASE_EXPIRED`. Concurrent reapers split the work
+without double-reclaiming, and the race with a late heartbeat resolves cleanly in either order. All
+expiry checks use the **database clock**, so clock skew between machines cannot cause premature
+expiry. **A crash consumes an attempt**: a job that keeps killing its worker (OOM, poison payload)
+must eventually be dead-lettered rather than loop forever.
+
+**Fencing.** Completion, failure, heartbeat and release only apply `WHERE status='RUNNING' AND
+locked_by = <me> AND attempts = <my attempt>`. A "zombie" that was paused (GC, partition) past its
+lease and wakes up cannot overwrite the new owner's result; its report is rejected and logged. The
+attempt number matters even when the same worker id reclaims the job. See `FencingTest`.
+
+**Graceful shutdown** (`SIGTERM`): stop claiming; keep heartbeating while in-flight jobs finish, up
+to the grace period; then interrupt stragglers and hand their leases back immediately. Unlike a
+crash, a graceful release **does not consume an attempt** (the counter and the half-finished attempt
+row are rolled back), so rolling deploys can never dead-letter a job. Keep Docker/Kubernetes
+termination grace (compose: `stop_grace_period: 60s`) and `spring.lifecycle.timeout-per-shutdown-phase`
+above the worker grace period.
+
+Observed in the compose stack (2 workers, 6s lease; informal check, not a benchmark): 16 ten-second jobs,
+one worker `SIGKILL`ed mid-flight: all 16 reached `SUCCEEDED`, 8 attempts were closed `LEASE_EXPIRED`
+and re-run on the survivor. A `SIGTERM` with 8 jobs in flight and a 5s grace period released all 8
+back to `PENDING` with `attempts = 0`.

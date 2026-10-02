@@ -112,4 +112,67 @@ public final class TestHandlers {
       Thread.sleep(60_000);
     }
   }
+
+  /**
+   * Sleeps {@code sleepMs}. With {@code firstAttemptOnly} later attempts return immediately.
+   * Records which attempts were interrupted and which started.
+   */
+  @Component
+  public static class Sleeper implements JobHandler {
+    public final java.util.Set<String> started = ConcurrentHashMap.newKeySet();
+    public final java.util.List<String> interrupted =
+        new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    public void reset() {
+      started.clear();
+      interrupted.clear();
+    }
+
+    public static String key(UUID jobId, int attempt) {
+      return jobId + ":" + attempt;
+    }
+
+    @Override
+    public String type() {
+      return "test-sleeper";
+    }
+
+    @Override
+    public void handle(JobContext ctx) throws Exception {
+      started.add(key(ctx.jobId(), ctx.attempt()));
+      if (ctx.payload().path("firstAttemptOnly").asBoolean(false) && ctx.attempt() > 1) {
+        return;
+      }
+      try {
+        Thread.sleep(ctx.payload().path("sleepMs").asLong(2_000));
+      } catch (InterruptedException e) {
+        interrupted.add(key(ctx.jobId(), ctx.attempt()));
+        throw e;
+      }
+    }
+  }
+
+  /** Ignores interruption on its first attempt (a non-cooperative handler). */
+  @Component
+  public static class Stubborn implements JobHandler {
+    @Override
+    public String type() {
+      return "test-stubborn";
+    }
+
+    @Override
+    public void handle(JobContext ctx) {
+      if (ctx.attempt() > 1) {
+        return;
+      }
+      long end = System.currentTimeMillis() + ctx.payload().path("stubbornMs").asLong(4_000);
+      while (System.currentTimeMillis() < end) {
+        try {
+          Thread.sleep(50);
+        } catch (InterruptedException ignored) {
+          // refuses to stop
+        }
+      }
+    }
+  }
 }
