@@ -18,6 +18,7 @@ public class InFlightJobs {
     private final AtomicBoolean timedOut = new AtomicBoolean();
     private volatile boolean leaseLost;
     private volatile boolean released;
+    private volatile boolean finishing;
 
     Handle(Lease lease, Thread thread) {
       this.lease = lease;
@@ -43,6 +44,20 @@ public class InFlightJobs {
 
     public boolean released() {
       return released;
+    }
+
+    /**
+     * True once the handler has returned and the executor is recording the outcome. From then on
+     * the job legitimately stops being RUNNING, so the heartbeat must not read that as a lost
+     * lease.
+     */
+    public boolean finishing() {
+      return finishing;
+    }
+
+    /** Called by the executor BEFORE it writes the outcome (the write is what ends RUNNING). */
+    public void markFinishing() {
+      finishing = true;
     }
 
     void markLeaseLost() {

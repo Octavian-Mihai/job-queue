@@ -112,6 +112,18 @@ the burst scenario, where enqueueing and processing compete for the same Postgre
 sustained about 1,480 jobs/s). At 100 jobs/s the queue adds about 0.1 s at p95. All caveats, per-scenario tables with ranges, the crash-during-load
 runs and the bugs the load test found are in **[loadtest/RESULTS.md](loadtest/RESULTS.md)**.
 
+### The dashboard under a worker crash
+
+Screenshots of the provisioned Grafana dashboard from a 3-worker run: about 50 emails/s, 3 slow reports/s and
+4 webhooks/s (roughly a third of webhook attempts fail at first, so retries and the DLQ fill in) for 200 s, with the worker
+holding the most jobs `SIGKILL`ed partway through (it held 8; all 8 were reclaimed, nothing was lost). The kill
+shows up as a brief spike in queue wait and "oldest pending age" and a `reclaimed (requeued)` blip, then
+recovery. "Workers up" drops from 3 to 2. This is a demonstration run, not one of the benchmark runs.
+
+![Grafana dashboard: queue depth, throughput, oldest pending age, and the worker kill](docs/dashboard-overview.jpg)
+
+![Grafana dashboard: latency, retries and dead letters, and crash recovery](docs/dashboard-failures.jpg)
+
 ## How it works
 
 **Claiming.** One SQL statement (`JobClaimRepository.claim`) picks runnable jobs with `FOR UPDATE SKIP
@@ -342,7 +354,8 @@ same plus the Docker image build.
 | Graceful shutdown: in-flight jobs finish or leases are released | `GracefulShutdownTest` |
 | Heartbeats, reaper, crash vs graceful accounting | `LeaseRepositoryTest`, `WorkerLifecycleTest` |
 | Saturated worker refills slots promptly (a load-test regression) | `SlotRefillTest` |
-| Metrics and `/stats` | `JobMetricsTest`, `MetricsAndStatsTest` |
+| A job finishing during a heartbeat is not mistaken for a lost lease | `HeartbeatRaceTest` (reproduces the exact interleaving) |
+| Metrics, zero-initialised rare-event counters, `/stats` | `JobMetricsTest`, `MetricsAndStatsTest` |
 
 Several safety properties were also checked by mutation: temporarily removing `SKIP LOCKED` (jobs ran up to 4
 times and the 5,000-job test failed), the attempt-number fence, the heartbeat, or the replay guard each made the

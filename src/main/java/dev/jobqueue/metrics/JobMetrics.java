@@ -1,9 +1,12 @@
 package dev.jobqueue.metrics;
 
+import dev.jobqueue.handler.HandlerRegistry;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
+import java.util.List;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
@@ -24,8 +27,49 @@ public class JobMetrics {
 
   private final MeterRegistry registry;
 
+  private static final List<String> OUTCOMES =
+      List.of("SUCCEEDED", "FAILED_RETRYABLE", "FAILED_NON_RETRYABLE", "TIMED_OUT");
+  private static final List<String> DEAD_REASONS =
+      List.of("NON_RETRYABLE", "MAX_ATTEMPTS_EXCEEDED");
+
+  /** For tests that do not care about pre-registration. */
   public JobMetrics(MeterRegistry registry) {
+    this(registry, new HandlerRegistry(List.of()));
+  }
+
+  @Autowired
+  public JobMetrics(MeterRegistry registry, HandlerRegistry handlers) {
     this.registry = registry;
+    preRegister(handlers);
+  }
+
+  /**
+   * Creates the event counters at zero for every known job type. Micrometer otherwise creates a
+   * counter at its first increment, so Prometheus's first sample of a rare event (a crash, a fenced
+   * write) is already 1 and {@code rate()} of a one-sample series is empty: the dashboard would
+   * show "no data" for exactly the events it exists to show. Starting at 0 gives rate() a baseline.
+   */
+  private void preRegister(HandlerRegistry handlers) {
+    for (String type : handlers.types()) {
+      for (String outcome : OUTCOMES) {
+        counter("jobqueue.attempts", "type", type, "outcome", outcome);
+      }
+      counter("jobqueue.jobs.retried", "type", type);
+      for (String reason : DEAD_REASONS) {
+        counter("jobqueue.jobs.dead", "type", type, "reason", reason);
+      }
+      counter("jobqueue.jobs.enqueued", "type", type);
+      counter("jobqueue.jobs.enqueue.duplicates", "type", type);
+      counter("jobqueue.leases.reclaimed", "type", type, "result", "requeued");
+      counter("jobqueue.leases.reclaimed", "type", type, "result", "dead");
+    }
+    counter("jobqueue.fenced", "operation", "complete");
+    counter("jobqueue.fenced", "operation", "fail");
+    counter("jobqueue.heartbeat.lost");
+  }
+
+  private Counter counter(String name, String... tags) {
+    return Counter.builder(name).tags(tags).register(registry);
   }
 
   /** A finished attempt: SUCCEEDED, FAILED_RETRYABLE, FAILED_NON_RETRYABLE or TIMED_OUT. */

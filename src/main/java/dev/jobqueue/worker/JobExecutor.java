@@ -79,6 +79,7 @@ public class JobExecutor {
   private void execute(Job job, InFlightJobs.Handle handle) {
     Optional<JobHandler> handler = registry.find(job.type());
     if (handler.isEmpty()) {
+      handle.markFinishing();
       recordFailure(
           job,
           FailureClassifier.NON_RETRYABLE,
@@ -93,6 +94,7 @@ public class JobExecutor {
     long startNanos = System.nanoTime();
     Result result = invoke(handler.get(), job, policy.executionTimeout(), handle);
     Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
+    handle.markFinishing(); // before any outcome write; see InFlightJobs.Handle#finishing
 
     if (result.error() == null) {
       if (repo.complete(job.id(), workerId, job.attempts())) {

@@ -117,3 +117,16 @@ Zero-lost-jobs verification: 42 processing runs (422,405 jobs: every accepted jo
 3. **My first kill scenario often killed a worker that held nothing** (median 0 reclaimed attempts over 3
    runs), so it proved little. It now keeps worker slots busy with a trickle of slow jobs so the victim
    always holds work (the superseded runs are in `loadtest/results/superseded/`).
+4. **A false "lost lease" when a fast job finished during a heartbeat** (found while capturing the dashboard
+   screenshots). The heartbeat snapshots in-flight jobs, then runs its extend `UPDATE`; a job that completed in
+   between was no longer `RUNNING`, which looked like a reclaimed lease, so the heartbeat counted a lost
+   lease and interrupted a handler that had simply finished. Over one 200 s demo run (11,400 short jobs) this
+   happened 12 times, always for jobs that went on to succeed, with no errors recorded. The executor now marks
+   a job as finishing *before* it writes the outcome, and the heartbeat ignores finishing jobs
+   (`HeartbeatRaceTest` reproduces the exact interleaving and fails without the guard). The same demo
+   run after the fix: 0 false events.
+5. **Dashboards showed "no data" for rare events.** Prometheus counters created at their first increment have
+   a single sample, so `rate()` of a crash or fenced write was empty exactly when it mattered (the crash-recovery
+   panel was blank although 5 leases had just been reclaimed). The event counters are now registered at zero
+   for every job type on startup (`JobMetricsTest`).
+

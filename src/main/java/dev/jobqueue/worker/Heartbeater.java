@@ -74,7 +74,9 @@ class Heartbeater {
   /** One heartbeat round; package-visible for tests. */
   void beat() {
     List<InFlightJobs.Handle> targets =
-        inFlight.snapshot().stream().filter(h -> !h.timedOut().get() && !h.released()).toList();
+        inFlight.snapshot().stream()
+            .filter(h -> !h.timedOut().get() && !h.released() && !h.finishing())
+            .toList();
     if (targets.isEmpty()) {
       return;
     }
@@ -82,7 +84,10 @@ class Heartbeater {
         leases.extend(
             workerId, targets.stream().map(InFlightJobs.Handle::lease).toList(), leaseDuration);
     for (InFlightJobs.Handle h : targets) {
-      if (!extended.contains(h.lease().jobId())) {
+      // Re-read `finishing` AFTER the UPDATE: the executor sets it before writing the outcome, so
+      // if the job left RUNNING because it just completed, the flag is already visible here. Only
+      // a claim that vanished while its handler was still running is a genuinely lost lease.
+      if (!extended.contains(h.lease().jobId()) && !h.finishing()) {
         log.warn(
             "lost lease on job {} attempt {}: interrupting its handler",
             h.lease().jobId(),

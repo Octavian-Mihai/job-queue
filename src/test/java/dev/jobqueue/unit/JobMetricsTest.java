@@ -71,4 +71,48 @@ class JobMetricsTest {
   private double count(String name, String... tags) {
     return registry.get(name).tags(tags).counter().count();
   }
+
+  @Test
+  void rareEventCountersExistAtZeroFromStartupSoRateWorksOnTheFirstEvent() {
+    var fresh = new SimpleMeterRegistry();
+    var handlers =
+        new dev.jobqueue.handler.HandlerRegistry(
+            java.util.List.of(
+                new dev.jobqueue.handler.JobHandler() {
+                  public String type() {
+                    return "send-email";
+                  }
+
+                  public void handle(dev.jobqueue.handler.JobContext c) {}
+                }));
+    new JobMetrics(fresh, handlers);
+
+    // Prometheus rate() needs two samples; a counter born at its first event has only one.
+    assertThat(zero(fresh, "jobqueue.leases.reclaimed", "type", "send-email", "result", "requeued"))
+        .isTrue();
+    assertThat(zero(fresh, "jobqueue.leases.reclaimed", "type", "send-email", "result", "dead"))
+        .isTrue();
+    assertThat(zero(fresh, "jobqueue.jobs.dead", "type", "send-email", "reason", "NON_RETRYABLE"))
+        .isTrue();
+    assertThat(
+            zero(
+                fresh,
+                "jobqueue.jobs.dead",
+                "type",
+                "send-email",
+                "reason",
+                "MAX_ATTEMPTS_EXCEEDED"))
+        .isTrue();
+    assertThat(zero(fresh, "jobqueue.attempts", "type", "send-email", "outcome", "TIMED_OUT"))
+        .isTrue();
+    assertThat(zero(fresh, "jobqueue.jobs.retried", "type", "send-email")).isTrue();
+    assertThat(zero(fresh, "jobqueue.fenced", "operation", "complete")).isTrue();
+    assertThat(zero(fresh, "jobqueue.fenced", "operation", "fail")).isTrue();
+    assertThat(fresh.find("jobqueue.heartbeat.lost").counter()).isNotNull();
+  }
+
+  private static boolean zero(SimpleMeterRegistry reg, String name, String... tags) {
+    var c = reg.find(name).tags(tags).counter();
+    return c != null && c.count() == 0;
+  }
 }
