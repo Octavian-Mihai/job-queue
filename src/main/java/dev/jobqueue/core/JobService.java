@@ -1,6 +1,7 @@
 package dev.jobqueue.core;
 
 import dev.jobqueue.handler.HandlerRegistry;
+import dev.jobqueue.metrics.JobMetrics;
 import dev.jobqueue.retry.RetryPolicies;
 import java.util.List;
 import java.util.UUID;
@@ -12,11 +13,14 @@ public class JobService {
   private final JobRepository repo;
   private final HandlerRegistry registry;
   private final RetryPolicies policies;
+  private final JobMetrics metrics;
 
-  public JobService(JobRepository repo, HandlerRegistry registry, RetryPolicies policies) {
+  public JobService(
+      JobRepository repo, HandlerRegistry registry, RetryPolicies policies, JobMetrics metrics) {
     this.repo = repo;
     this.registry = registry;
     this.policies = policies;
+    this.metrics = metrics;
   }
 
   public EnqueueResult enqueue(NewJob newJob) {
@@ -38,10 +42,12 @@ public class JobService {
     }
     var id = repo.insertIfAbsent(newJob);
     if (id.isPresent()) {
+      metrics.enqueued(newJob.type(), true);
       return new EnqueueResult(repo.findById(id.get()).orElseThrow(), true);
     }
     // Conflict on the idempotency key: the winning row is committed by now, so this read sees it.
     Job existing = repo.findByIdempotencyKey(newJob.idempotencyKey()).orElseThrow();
+    metrics.enqueued(newJob.type(), false);
     return new EnqueueResult(existing, false);
   }
 

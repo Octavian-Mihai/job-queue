@@ -2,6 +2,7 @@ package dev.jobqueue.worker;
 
 import dev.jobqueue.config.ConditionalOnRole;
 import dev.jobqueue.config.Role;
+import dev.jobqueue.metrics.JobMetrics;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -24,12 +25,14 @@ public class Reaper implements SmartLifecycle {
 
   private final LeaseRepository leases;
   private final WorkerProperties props;
+  private final JobMetrics metrics;
   private ScheduledExecutorService scheduler;
   private volatile boolean running;
 
-  public Reaper(LeaseRepository leases, WorkerProperties props) {
+  public Reaper(LeaseRepository leases, WorkerProperties props, JobMetrics metrics) {
     this.leases = leases;
     this.props = props;
+    this.metrics = metrics;
   }
 
   @Override
@@ -77,6 +80,13 @@ public class Reaper implements SmartLifecycle {
     do {
       batch = leases.reapExpired(props.reaperBatchSize());
       total += batch.size();
+      for (LeaseRepository.Reaped r : batch) {
+        boolean dead = r.newStatus().equals("DEAD");
+        metrics.leaseReclaimed(r.type(), dead ? "dead" : "requeued");
+        if (dead) {
+          metrics.dead(r.type(), DeadReason.MAX_ATTEMPTS_EXCEEDED);
+        }
+      }
       if (!batch.isEmpty()) {
         long dead = batch.stream().filter(r -> r.newStatus().equals("DEAD")).count();
         log.warn(

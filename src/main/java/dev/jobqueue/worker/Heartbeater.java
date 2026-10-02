@@ -1,5 +1,6 @@
 package dev.jobqueue.worker;
 
+import dev.jobqueue.metrics.JobMetrics;
 import java.time.Duration;
 import java.util.List;
 import java.util.Set;
@@ -25,6 +26,7 @@ class Heartbeater {
 
   private final LeaseRepository leases;
   private final InFlightJobs inFlight;
+  private final JobMetrics metrics;
   private final String workerId;
   private final Duration leaseDuration;
   private final Duration interval;
@@ -39,11 +41,13 @@ class Heartbeater {
   Heartbeater(
       LeaseRepository leases,
       InFlightJobs inFlight,
+      JobMetrics metrics,
       String workerId,
       Duration leaseDuration,
       Duration interval) {
     this.leases = leases;
     this.inFlight = inFlight;
+    this.metrics = metrics;
     this.workerId = workerId;
     this.leaseDuration = leaseDuration;
     this.interval = interval;
@@ -83,6 +87,7 @@ class Heartbeater {
             "lost lease on job {} attempt {}: interrupting its handler",
             h.lease().jobId(),
             h.lease().attempt());
+        metrics.heartbeatLost();
         h.markLeaseLost();
         h.thread().interrupt();
       }

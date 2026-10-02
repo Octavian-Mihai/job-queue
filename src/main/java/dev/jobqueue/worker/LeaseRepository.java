@@ -24,7 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class LeaseRepository {
 
   /** A job returned to the queue (or buried) by the reaper. */
-  public record Reaped(UUID jobId, String newStatus) {}
+  public record Reaped(UUID jobId, String type, String newStatus) {}
 
   private final JdbcTemplate jdbc;
 
@@ -119,11 +119,13 @@ public class LeaseRepository {
                  '%s', created_at
           FROM reaped WHERE status = 'DEAD'
         )
-        SELECT id, status FROM reaped
+        SELECT id, type, status FROM reaped
         """
             .formatted(DeadReason.MAX_ATTEMPTS_EXCEEDED),
         ps -> ps.setInt(1, limit),
-        (rs, i) -> new Reaped(rs.getObject("id", UUID.class), rs.getString("status")));
+        (rs, i) ->
+            new Reaped(
+                rs.getObject("id", UUID.class), rs.getString("type"), rs.getString("status")));
   }
 
   /**

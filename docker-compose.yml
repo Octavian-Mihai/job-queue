@@ -16,6 +16,7 @@ services:
   api:
     build: .
     environment: &app-env
+      LOGGING_STRUCTURED_FORMAT_CONSOLE: logstash   # one JSON object per line, MDC (job_id, worker_id) included
       DB_URL: jdbc:postgresql://postgres:5432/jobqueue
       DB_USER: jobqueue
       DB_PASSWORD: jobqueue

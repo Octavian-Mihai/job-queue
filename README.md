@@ -7,9 +7,9 @@ in Java 21 + Spring Boot. Workers claim jobs with `SELECT ... FOR UPDATE SKIP LO
 heartbeat-extended leases, retry with exponential backoff and jitter, and dead-letter jobs that
 exhaust their attempts. The goal is correctness under failure, backed by measured results.
 
-> **Status: phase 5 of 9 (leases, crash recovery, graceful shutdown).** Jobs are enqueued, claimed
-> by concurrent workers, retried with backoff, dead-lettered, and survive worker crashes and
-> deploys. Metrics/Grafana (phase 6), the full test matrix (7) and load tests (8) come next.
+> **Status: phase 6 of 9 (metrics and dashboard).** Everything through crash recovery plus
+> Prometheus metrics, a Grafana dashboard and `GET /stats`. The full test matrix (7) and load
+> tests (8) come next.
 
 ## Architecture
 
@@ -65,7 +65,7 @@ curl -XPOST localhost:8080/jobs/<id>/cancel                    # 409 unless stil
 Errors are RFC 7807 `application/problem+json` (validation failures include an `errors` map).
 
 Host ports are overridable if they clash with something else: `API_PORT`, `POSTGRES_PORT`,
-`PROMETHEUS_PORT`, `GRAFANA_PORT`. Prometheus: `:9090`, Grafana: `:3000`.
+`PROMETHEUS_PORT`, `GRAFANA_PORT`. Prometheus: `:9090`, Grafana: `:3000` (anonymous admin; dashboard **Job Queue** is provisioned).
 
 Local development (needs Docker for Testcontainers):
 
@@ -190,3 +190,28 @@ Observed in the compose stack (2 workers, 6s lease; informal check, not a benchm
 one worker `SIGKILL`ed mid-flight: all 16 reached `SUCCEEDED`, 8 attempts were closed `LEASE_EXPIRED`
 and re-run on the survivor. A `SIGTERM` with 8 jobs in flight and a 5s grace period released all 8
 back to `PENDING` with `attempts = 0`.
+
+## Observability
+
+`GET /stats` returns counts by status, the age of the oldest runnable pending job and the DLQ size.
+Prometheus scrapes `/actuator/prometheus` on the API and every worker (workers are discovered through
+compose DNS, so `--scale worker=N` just works). Logs are one JSON object per line in compose, with
+`job_id` and `worker_id` from the MDC on every job log line.
+
+| Metric | Type | Notes |
+|---|---|---|
+| `jobqueue_jobs{status}` | gauge | queue depth by status. Queue-wide: aggregate with `max()`, not `sum()` |
+| `jobqueue_oldest_pending_age_seconds` | gauge | longest wait of a runnable pending job; the "keeping up?" signal |
+| `jobqueue_dlq_size` | gauge | dead letters not yet replayed |
+| `jobqueue_jobs_in_flight` | gauge | per process; aggregate with `sum()` |
+| `jobqueue_attempts_total{type,outcome}` | counter | processed/failed: `SUCCEEDED`, `FAILED_RETRYABLE`, `FAILED_NON_RETRYABLE`, `TIMED_OUT` |
+| `jobqueue_jobs_retried_total{type}` | counter | failed attempts that requeued the job |
+| `jobqueue_jobs_dead_total{type,reason}` | counter | jobs entering the DLQ |
+| `jobqueue_jobs_enqueued_total{type}` / `..._enqueue_duplicates_total` | counter | accepted vs idempotent replays |
+| `jobqueue_leases_reclaimed_total{type,result}` | counter | reaper reclaims after a crash |
+| `jobqueue_fenced_total{operation}` / `jobqueue_heartbeat_lost_total` | counter | zombie writes rejected / leases found lost |
+| `jobqueue_job_enqueue_to_start_seconds` | histogram | `claim time - run_at` (database clock), i.e. queue wait; measured from `run_at` so delayed/retried jobs show queueing, not their scheduled delay |
+| `jobqueue_job_execution_seconds{type,outcome}` | histogram | handler wall time |
+
+Queue gauges are computed from the database on scrape (cached 2 s); `GROUP BY status` scans `jobs`,
+which is fine here but is one of the things to replace at scale (see limitations).

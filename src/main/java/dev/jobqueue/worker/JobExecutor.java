@@ -5,6 +5,7 @@ import dev.jobqueue.core.Job;
 import dev.jobqueue.handler.HandlerRegistry;
 import dev.jobqueue.handler.JobContext;
 import dev.jobqueue.handler.JobHandler;
+import dev.jobqueue.metrics.JobMetrics;
 import dev.jobqueue.retry.RetryPolicies;
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -37,6 +38,7 @@ public class JobExecutor {
   private final JobClaimRepository repo;
   private final RetryPolicies policies;
   private final InFlightJobs inFlight;
+  private final JobMetrics metrics;
   private final String workerId;
 
   public JobExecutor(
@@ -44,11 +46,13 @@ public class JobExecutor {
       JobClaimRepository repo,
       RetryPolicies policies,
       InFlightJobs inFlight,
+      JobMetrics metrics,
       JobQueueProperties properties) {
     this.registry = registry;
     this.repo = repo;
     this.policies = policies;
     this.inFlight = inFlight;
+    this.metrics = metrics;
     this.workerId = properties.workerId();
   }
 
@@ -76,18 +80,27 @@ public class JobExecutor {
     Optional<JobHandler> handler = registry.find(job.type());
     if (handler.isEmpty()) {
       recordFailure(
-          job, FailureClassifier.NON_RETRYABLE, "no handler registered for " + job.type(), null);
+          job,
+          FailureClassifier.NON_RETRYABLE,
+          "no handler registered for " + job.type(),
+          null,
+          Duration.ZERO);
       return;
     }
     RetryPolicies.Resolved policy = policies.resolve(job.type());
     log.info("starting {} attempt {}/{}", job.type(), job.attempts(), job.maxAttempts());
 
+    long startNanos = System.nanoTime();
     Result result = invoke(handler.get(), job, policy.executionTimeout(), handle);
+    Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
 
     if (result.error() == null) {
       if (repo.complete(job.id(), workerId, job.attempts())) {
+        metrics.attempt(job.type(), "SUCCEEDED");
+        metrics.executionTime(job.type(), "succeeded", elapsed);
         log.info("succeeded {}", job.type());
       } else {
+        metrics.fenced("complete");
         log.warn("lost ownership of job {} before completing; result discarded", job.id());
       }
     } else if (handle.released()) {
@@ -99,13 +112,15 @@ public class JobExecutor {
           job,
           new FailureClassifier.Classification(true, "TIMED_OUT"),
           "execution timed out after " + policy.executionTimeout().toMillis() + " ms",
-          result.error());
+          result.error(),
+          elapsed);
     } else {
       recordFailure(
           job,
           FailureClassifier.classify(result.error()),
           String.valueOf(result.error().getMessage()),
-          result.error());
+          result.error(),
+          elapsed);
     }
   }
 
@@ -143,7 +158,11 @@ public class JobExecutor {
   }
 
   private void recordFailure(
-      Job job, FailureClassifier.Classification kind, String message, Throwable error) {
+      Job job,
+      FailureClassifier.Classification kind,
+      String message,
+      Throwable error,
+      Duration elapsed) {
     Duration delay =
         policies.resolve(job.type()).backoff().delay(job.attempts(), ThreadLocalRandom.current());
     var status =
@@ -157,6 +176,16 @@ public class JobExecutor {
             truncate(message, MAX_ERROR_CHARS),
             error == null ? null : truncate(stackTrace(error), MAX_TRACE_CHARS));
     if (status.isPresent()) {
+      metrics.attempt(job.type(), kind.outcome());
+      metrics.executionTime(
+          job.type(), kind.outcome().equals("TIMED_OUT") ? "timed_out" : "failed", elapsed);
+      if (status.get() == dev.jobqueue.core.JobStatus.PENDING) {
+        metrics.retried(job.type());
+      } else {
+        metrics.dead(
+            job.type(),
+            kind.retryable() ? DeadReason.MAX_ATTEMPTS_EXCEEDED : DeadReason.NON_RETRYABLE);
+      }
       log.warn(
           "failed {} attempt {}/{} ({}): {} -> {}",
           job.type(),
@@ -166,6 +195,7 @@ public class JobExecutor {
           message,
           status.get());
     } else {
+      metrics.fenced("fail");
       log.warn("lost ownership of job {} before recording failure; ignored", job.id());
     }
   }

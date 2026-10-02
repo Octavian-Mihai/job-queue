@@ -4,6 +4,7 @@ import dev.jobqueue.config.ConditionalOnRole;
 import dev.jobqueue.config.JobQueueProperties;
 import dev.jobqueue.config.Role;
 import dev.jobqueue.core.Job;
+import dev.jobqueue.metrics.JobMetrics;
 import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
@@ -40,6 +41,7 @@ public class WorkerLoop implements SmartLifecycle {
   private final JobExecutor executor;
   private final LeaseRepository leases;
   private final InFlightJobs inFlight;
+  private final JobMetrics metrics;
   private final Heartbeater heartbeater;
   private final WorkerProperties props;
   private final String workerId;
@@ -57,17 +59,19 @@ public class WorkerLoop implements SmartLifecycle {
       JobExecutor executor,
       LeaseRepository leases,
       InFlightJobs inFlight,
+      JobMetrics metrics,
       WorkerProperties props,
       JobQueueProperties queueProperties) {
     this.repo = repo;
     this.executor = executor;
     this.leases = leases;
     this.inFlight = inFlight;
+    this.metrics = metrics;
     this.props = props;
     this.workerId = queueProperties.workerId();
     this.heartbeater =
         new Heartbeater(
-            leases, inFlight, workerId, props.leaseDuration(), props.heartbeatInterval());
+            leases, inFlight, metrics, workerId, props.leaseDuration(), props.heartbeatInterval());
     this.slots = new Semaphore(props.concurrency());
   }
 
@@ -139,6 +143,9 @@ public class WorkerLoop implements SmartLifecycle {
       return 0;
     }
     slots.release(want - jobs.size());
+    jobs.forEach(
+        j ->
+            metrics.enqueueToStart(j.type(), java.time.Duration.between(j.runAt(), j.updatedAt())));
     jobs.stream()
         .sorted(Comparator.comparingInt(Job::priority).reversed().thenComparing(Job::runAt))
         .forEach(this::dispatch);
