@@ -315,9 +315,9 @@ Zero-lost-jobs verification: 45 runs, ALL PASSED.
 ### What the numbers say
 
 - **Processing scales near-linearly with workers** when nothing else competes: about 8.6-9.0k jobs/min
-  per worker (about 147 jobs/s, close to the 160/s ceiling of 8 slots at ~50 ms per job), giving 8.8k,
-  18.1k and 34.5k jobs/min for 1, 2 and 4 workers (1.0x, 2.05x, 3.9x). Mid-run CPU samples (single
-  snapshots, not averages) showed Postgres at about 16%, 23% and 50% of one core and each worker at
+  per worker by median (individual runs 8.3-9.1k; about 147 jobs/s, close to the 160/s ceiling of 8 slots at ~50 ms per job), giving 8.8k,
+  18.1k and 34.5k jobs/min for 1, 2 and 4 workers (1.0x, 2.05x, 3.9x). Mid-run CPU samples (one `docker stats`
+  snapshot from the first run of each, not averages) showed Postgres at about 16%, 23% and 50% of one core and each worker at
   roughly 15-25%, so the database was not the limit at these rates: the simulated handler latency was.
 - **Under burst, enqueue and processing compete.** The API alone sustained about 1,480 enqueues/s
   (p95 15 ms), but while workers were draining it managed only about 450-490/s with p95 from 13 ms to
@@ -341,8 +341,9 @@ Zero-lost-jobs verification: 45 runs, ALL PASSED.
    (1 worker, 500 jobs/s) processed about **2,287 jobs/min**; after waking the poller
    as soon as a slot frees it processed about **7,726 jobs/min** (3.4x; single runs
    each, in `loadtest/results/calibration/`). The old loop capped throughput at roughly
-   `concurrency / poll-interval` however fast the handlers were. `SlotRefillTest` reproduces it (the old
-   loop needs ~6.9 s to drain 100 jobs under a 500 ms poll interval, the fix about 1 s).
+   `concurrency / poll-interval` however fast the handlers were. `SlotRefillTest` reproduces it: with a
+   500 ms poll interval the old loop took 6.9 s to drain 100 jobs and fails the test's 3 s bound; the fixed
+   loop passes it.
 2. **The idle-poll backoff ceiling was a latency floor.** With the original 5 s ceiling, one worker at
    100 jobs/s had an end-to-end **p95 of 3.8 s** (median 0.08 s): jobs arriving after a quiet period waited
    for the next poll. Capping the backoff at 500 ms gave p95 0.11 s (same load, 3 runs each), which
