@@ -368,3 +368,7 @@ src/main/resources/db/migration/   Flyway schema
 docker/                            Prometheus config, Grafana provisioning and dashboard
 loadtest/                          k6 script, run/collect/summarize scripts, raw results, RESULTS.md
 ```
+
+## License
+
+[MIT](LICENSE)
