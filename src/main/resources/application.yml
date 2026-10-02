@@ -1,4 +1,7 @@
 spring:
+  lifecycle:
+    # Must exceed jobqueue.worker.shutdown-grace-period (30s) plus a few seconds to release leases.
+    timeout-per-shutdown-phase: 45s
   application:
     name: durable-job-queue
   datasource:

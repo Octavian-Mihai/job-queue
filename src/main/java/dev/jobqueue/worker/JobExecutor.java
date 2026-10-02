@@ -36,29 +36,34 @@ public class JobExecutor {
   private final HandlerRegistry registry;
   private final JobClaimRepository repo;
   private final RetryPolicies policies;
+  private final InFlightJobs inFlight;
   private final String workerId;
 
   public JobExecutor(
       HandlerRegistry registry,
       JobClaimRepository repo,
       RetryPolicies policies,
+      InFlightJobs inFlight,
       JobQueueProperties properties) {
     this.registry = registry;
     this.repo = repo;
     this.policies = policies;
+    this.inFlight = inFlight;
     this.workerId = properties.workerId();
   }
 
   public void run(Job job) {
     MDC.put("job_id", job.id().toString());
     MDC.put("worker_id", workerId);
+    InFlightJobs.Handle handle = inFlight.register(job, Thread.currentThread());
     try {
-      execute(job);
+      execute(job, handle);
     } catch (RuntimeException e) {
       // Recording the outcome failed (e.g. DB down). The job stays RUNNING until its lease
       // expires and the reaper (phase 5) returns it to the queue: at-least-once, nothing lost.
       log.error("could not record outcome of job {} attempt {}", job.id(), job.attempts(), e);
     } finally {
+      inFlight.unregister(handle);
       MDC.remove("job_id");
       MDC.remove("worker_id");
     }
@@ -67,7 +72,7 @@ public class JobExecutor {
   /** How the handler call ended: {@code error == null} means it returned normally. */
   private record Result(Throwable error, boolean timedOut) {}
 
-  private void execute(Job job) {
+  private void execute(Job job, InFlightJobs.Handle handle) {
     Optional<JobHandler> handler = registry.find(job.type());
     if (handler.isEmpty()) {
       recordFailure(
@@ -77,7 +82,7 @@ public class JobExecutor {
     RetryPolicies.Resolved policy = policies.resolve(job.type());
     log.info("starting {} attempt {}/{}", job.type(), job.attempts(), job.maxAttempts());
 
-    Result result = invoke(handler.get(), job, policy.executionTimeout());
+    Result result = invoke(handler.get(), job, policy.executionTimeout(), handle);
 
     if (result.error() == null) {
       if (repo.complete(job.id(), workerId, job.attempts())) {
@@ -85,6 +90,10 @@ public class JobExecutor {
       } else {
         log.warn("lost ownership of job {} before completing; result discarded", job.id());
       }
+    } else if (handle.released()) {
+      // Shutdown interrupted this handler and is handing the lease back (attempt not consumed);
+      // recording a failure here would wrongly burn an attempt.
+      log.info("interrupted by shutdown; lease released without recording a failure");
     } else if (result.timedOut()) {
       recordFailure(
           job,
@@ -107,8 +116,8 @@ public class JobExecutor {
    * the same job. If the handler returns normally despite a late interrupt, the work is done and
    * counts as success.
    */
-  private Result invoke(JobHandler handler, Job job, Duration timeout) {
-    AtomicBoolean timedOut = new AtomicBoolean();
+  private Result invoke(JobHandler handler, Job job, Duration timeout, InFlightJobs.Handle handle) {
+    AtomicBoolean timedOut = handle.timedOut();
     Thread self = Thread.currentThread();
     ScheduledFuture<?> guard =
         TIMEOUTS.schedule(

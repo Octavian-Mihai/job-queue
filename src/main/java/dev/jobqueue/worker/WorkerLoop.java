@@ -38,24 +38,36 @@ public class WorkerLoop implements SmartLifecycle {
 
   private final JobClaimRepository repo;
   private final JobExecutor executor;
+  private final LeaseRepository leases;
+  private final InFlightJobs inFlight;
+  private final Heartbeater heartbeater;
   private final WorkerProperties props;
   private final String workerId;
   private final Semaphore slots;
   private final ExecutorService jobThreads =
       Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("job-", 0).factory());
 
+  private final java.util.concurrent.CountDownLatch stopSignal =
+      new java.util.concurrent.CountDownLatch(1);
   private volatile boolean running;
   private Thread poller;
 
   public WorkerLoop(
       JobClaimRepository repo,
       JobExecutor executor,
+      LeaseRepository leases,
+      InFlightJobs inFlight,
       WorkerProperties props,
       JobQueueProperties queueProperties) {
     this.repo = repo;
     this.executor = executor;
+    this.leases = leases;
+    this.inFlight = inFlight;
     this.props = props;
     this.workerId = queueProperties.workerId();
+    this.heartbeater =
+        new Heartbeater(
+            leases, inFlight, workerId, props.leaseDuration(), props.heartbeatInterval());
     this.slots = new Semaphore(props.concurrency());
   }
 
@@ -65,6 +77,7 @@ public class WorkerLoop implements SmartLifecycle {
       return;
     }
     running = true;
+    heartbeater.start();
     poller = new Thread(this::pollLoop, "job-poller");
     poller.start();
     log.info(
@@ -79,7 +92,13 @@ public class WorkerLoop implements SmartLifecycle {
     MDC.put("worker_id", workerId);
     Duration idleSleep = props.pollInterval();
     while (running) {
-      int claimed = pollOnce();
+      int claimed;
+      try {
+        claimed = pollOnce();
+      } catch (RuntimeException e) {
+        log.error("unexpected error in poll loop; continuing", e);
+        claimed = 0;
+      }
       boolean drained = claimed == props.batchSize();
       if (claimed > 0) {
         idleSleep = props.pollInterval();
@@ -91,7 +110,12 @@ public class WorkerLoop implements SmartLifecycle {
       }
       try {
         // claimed == -1 means all slots busy: re-check soon rather than backing off.
-        Thread.sleep((claimed < 0 ? props.pollInterval() : idleSleep).toMillis());
+        // Waiting on the stop signal (not Thread.sleep) lets stop() end the wait without
+        // interrupting the poller, which could otherwise land in the middle of a JDBC call.
+        if (stopSignal.await(
+            (claimed < 0 ? props.pollInterval() : idleSleep).toMillis(), TimeUnit.MILLISECONDS)) {
+          return;
+        }
       } catch (InterruptedException e) {
         return;
       }
@@ -132,26 +156,66 @@ public class WorkerLoop implements SmartLifecycle {
         });
   }
 
+  /**
+   * Graceful shutdown:
+   *
+   * <ol>
+   *   <li>stop claiming new jobs;
+   *   <li>keep heartbeating while in-flight jobs finish, up to {@code shutdown-grace-period};
+   *   <li>at the deadline, mark what is still running as released, interrupt it, and hand its
+   *       leases back to the queue right away (no attempt consumed), so another worker picks the
+   *       jobs up in seconds instead of waiting for the lease to expire.
+   * </ol>
+   *
+   * Nothing is lost either way: a job either finishes, or returns to PENDING.
+   */
   @Override
   public synchronized void stop() {
     if (!running) {
       return;
     }
-    running = false; // stop claiming
-    poller.interrupt();
-    jobThreads.shutdown();
+    running = false; // 1. stop claiming
+    stopSignal.countDown();
     try {
-      poller.join(5_000);
-      if (!jobThreads.awaitTermination(
-          props.shutdownGracePeriod().toMillis(), TimeUnit.MILLISECONDS)) {
-        // Phase 5: interrupt stragglers and release their leases. For now they stay RUNNING.
-        log.warn("shutdown grace period elapsed with jobs still running");
+      // Join the poller BEFORE closing the job executor: a poll already in progress may have just
+      // claimed jobs, and they must still be dispatched (and then drained below), not orphaned.
+      poller.join(10_000);
+      jobThreads.shutdown();
+      int inFlightAtStop = inFlight.count();
+      log.info("worker {} stopping: waiting for {} in-flight job(s)", workerId, inFlightAtStop);
+      boolean drained =
+          jobThreads.awaitTermination(
+              props.shutdownGracePeriod().toMillis(), TimeUnit.MILLISECONDS);
+      if (!drained) {
+        releaseStragglers();
         jobThreads.shutdownNow();
+        jobThreads.awaitTermination(5, TimeUnit.SECONDS);
       }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
+    } finally {
+      heartbeater.stop();
     }
     log.info("worker {} stopped", workerId);
+  }
+
+  private void releaseStragglers() {
+    List<InFlightJobs.Handle> remaining = inFlight.snapshot();
+    log.warn(
+        "shutdown grace period elapsed with {} job(s) still running: releasing their leases",
+        remaining.size());
+    remaining.forEach(InFlightJobs.Handle::markReleased); // before interrupting: see JobExecutor
+    int released;
+    try {
+      released =
+          leases.release(workerId, remaining.stream().map(InFlightJobs.Handle::lease).toList());
+    } catch (RuntimeException e) {
+      // Not fatal: unreleased leases simply expire and the reaper requeues those jobs.
+      log.error("could not release leases; the reaper will reclaim them after expiry", e);
+      released = 0;
+    }
+    remaining.forEach(h -> h.thread().interrupt());
+    log.info("released {} lease(s) back to the queue", released);
   }
 
   @Override

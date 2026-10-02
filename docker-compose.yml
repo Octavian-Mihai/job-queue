@@ -28,9 +28,13 @@ services:
   worker:
     build: .
     image: durable-job-queue:local
+    stop_grace_period: 60s   # must exceed the worker's shutdown grace period (default 30s)
     environment:
       <<: *app-env
       JOBQUEUE_ROLES: worker
+      JOBQUEUE_WORKER_LEASE_DURATION: ${WORKER_LEASE_DURATION:-30s}
+      JOBQUEUE_WORKER_REAPER_INTERVAL: ${WORKER_REAPER_INTERVAL:-5s}
+      JOBQUEUE_WORKER_SHUTDOWN_GRACE_PERIOD: ${WORKER_SHUTDOWN_GRACE_PERIOD:-30s}
     depends_on:
       postgres: { condition: service_healthy }
       api: { condition: service_started }   # api owns the first Flyway run in practice; migrations are lock-safe anyway
