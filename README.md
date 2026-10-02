@@ -7,8 +7,8 @@ in Java 21 + Spring Boot. Workers claim jobs with `SELECT ... FOR UPDATE SKIP LO
 heartbeat-extended leases, retry with exponential backoff and jitter, and dead-letter jobs that
 exhaust their attempts. The goal is correctness under failure, backed by measured results.
 
-> **Status: phase 1 of 9 (skeleton).** Schema, compose stack, health endpoint and CI exist;
-> the queue logic is built in later phases. Sections below grow as phases land.
+> **Status: phase 2 of 9 (enqueue API).** Jobs can be submitted (idempotently), inspected, listed
+> and cancelled. Nothing executes them yet: workers arrive in phase 3. Sections grow as phases land.
 
 ## Architecture
 
@@ -48,6 +48,21 @@ docker compose up --build --scale worker=4
 curl localhost:8080/actuator/health
 ```
 
+Enqueue and inspect (OpenAPI docs: `http://localhost:8080/swagger-ui/index.html`):
+
+```bash
+curl -i -XPOST localhost:8080/jobs -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: order-42-welcome-email' \
+  -d '{"type":"send-email","payload":{"to":"a@b.c"},"priority":5,"delaySeconds":10,"maxAttempts":3}'
+# repeat the same command: 200 with the same job instead of 201 and a duplicate
+
+curl localhost:8080/jobs/<id>                                  # job + attempt history
+curl 'localhost:8080/jobs?status=PENDING&type=send-email&size=20'
+curl -XPOST localhost:8080/jobs/<id>/cancel                    # 409 unless still PENDING
+```
+
+Errors are RFC 7807 `application/problem+json` (validation failures include an `errors` map).
+
 Host ports are overridable if they clash with something else: `API_PORT`, `POSTGRES_PORT`,
 `PROMETHEUS_PORT`, `GRAFANA_PORT`. Prometheus: `:9090`, Grafana: `:3000`.
 
@@ -63,3 +78,12 @@ Local development (needs Docker for Testcontainers):
 `jobs.priority`: higher value is claimed first. A DB `CHECK` guarantees a `RUNNING` row always has
 `locked_by` and `lease_expires_at`, and no other state does. `dead_letter_jobs` has no foreign key
 to `jobs` on purpose, so DLQ records survive cleanup of old job rows.
+
+## Idempotency
+
+`POST /jobs` with an `Idempotency-Key` header runs
+`INSERT ... ON CONFLICT (idempotency_key) DO NOTHING RETURNING id` against a unique index. Two
+concurrent requests serialize on the index: one inserts (201), the other waits for it, inserts
+nothing, and reads the winner's row (200). There is no check-then-insert window. A test fires 32
+simultaneous requests with one key and asserts exactly one row and one 201. A repeated key returns
+the *existing* job even if the new request body differs (it does not compare payloads).

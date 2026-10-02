@@ -3,14 +3,21 @@ package dev.jobqueue;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
-/** Real PostgreSQL (no H2) shared by integration tests. */
+/**
+ * Real PostgreSQL (no H2) shared by all integration tests.
+ *
+ * <p>Singleton container, started once per JVM and reaped by Testcontainers' Ryuk. Do not use
+ * {@code @Container} here: it stops the container after each test class while Spring keeps the
+ * cached context (and its connection pool) alive, so later classes would hit a dead database.
+ */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Testcontainers
 public abstract class PostgresTestBase {
 
-  @Container @ServiceConnection
+  @ServiceConnection
   static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
+
+  static {
+    POSTGRES.start();
+  }
 }
