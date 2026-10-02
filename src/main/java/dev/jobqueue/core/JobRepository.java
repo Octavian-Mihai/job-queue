@@ -3,15 +3,12 @@ package dev.jobqueue.core;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.sql.Types;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -20,17 +17,15 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class JobRepository {
 
-  private static final String COLUMNS =
-      "id, queue_name, type, payload, status, priority, attempts, max_attempts, run_at, locked_by,"
-          + " lease_expires_at, last_error, idempotency_key, created_at, updated_at, finished_at";
-
   private final NamedParameterJdbcTemplate jdbc;
   private final ObjectMapper mapper;
-  private final RowMapper<Job> jobMapper = this::mapJob;
+  private final JobRowMapper jobMapper;
 
-  public JobRepository(NamedParameterJdbcTemplate jdbc, ObjectMapper mapper) {
+  public JobRepository(
+      NamedParameterJdbcTemplate jdbc, ObjectMapper mapper, JobRowMapper jobMapper) {
     this.jdbc = jdbc;
     this.mapper = mapper;
+    this.jobMapper = jobMapper;
   }
 
   /**
@@ -67,7 +62,7 @@ public class JobRepository {
   public Optional<Job> findById(UUID id) {
     return jdbc
         .query(
-            "SELECT " + COLUMNS + " FROM jobs WHERE id = :id",
+            "SELECT " + JobRowMapper.COLUMNS + " FROM jobs WHERE id = :id",
             new MapSqlParameterSource("id", id),
             jobMapper)
         .stream()
@@ -77,7 +72,7 @@ public class JobRepository {
   public Optional<Job> findByIdempotencyKey(String key) {
     return jdbc
         .query(
-            "SELECT " + COLUMNS + " FROM jobs WHERE idempotency_key = :key",
+            "SELECT " + JobRowMapper.COLUMNS + " FROM jobs WHERE idempotency_key = :key",
             new MapSqlParameterSource("key", key),
             jobMapper)
         .stream()
@@ -123,7 +118,7 @@ public class JobRepository {
         new ArrayList<>(
             jdbc.query(
                 "SELECT "
-                    + COLUMNS
+                    + JobRowMapper.COLUMNS
                     + " FROM jobs"
                     + where
                     + " ORDER BY created_at DESC, id LIMIT :limit OFFSET :offset",
@@ -143,39 +138,11 @@ public class JobRepository {
         == 1;
   }
 
-  private Job mapJob(ResultSet rs, int row) throws SQLException {
-    return new Job(
-        rs.getObject("id", UUID.class),
-        rs.getString("queue_name"),
-        rs.getString("type"),
-        readJson(rs.getString("payload")),
-        JobStatus.valueOf(rs.getString("status")),
-        rs.getInt("priority"),
-        rs.getInt("attempts"),
-        rs.getInt("max_attempts"),
-        rs.getObject("run_at", OffsetDateTime.class),
-        rs.getString("locked_by"),
-        rs.getObject("lease_expires_at", OffsetDateTime.class),
-        rs.getString("last_error"),
-        rs.getString("idempotency_key"),
-        rs.getObject("created_at", OffsetDateTime.class),
-        rs.getObject("updated_at", OffsetDateTime.class),
-        rs.getObject("finished_at", OffsetDateTime.class));
-  }
-
   private String toJson(JsonNode node) {
     try {
       return mapper.writeValueAsString(node);
     } catch (JsonProcessingException e) {
       throw new IllegalArgumentException("payload is not serializable", e);
-    }
-  }
-
-  private JsonNode readJson(String json) {
-    try {
-      return mapper.readTree(json);
-    } catch (JsonProcessingException e) {
-      throw new IllegalStateException("corrupt payload JSON in database", e);
     }
   }
 }

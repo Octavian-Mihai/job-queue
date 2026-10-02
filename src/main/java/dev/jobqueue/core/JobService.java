@@ -1,5 +1,6 @@
 package dev.jobqueue.core;
 
+import dev.jobqueue.handler.HandlerRegistry;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -8,12 +9,18 @@ import org.springframework.stereotype.Service;
 public class JobService {
 
   private final JobRepository repo;
+  private final HandlerRegistry registry;
 
-  public JobService(JobRepository repo) {
+  public JobService(JobRepository repo, HandlerRegistry registry) {
     this.repo = repo;
+    this.registry = registry;
   }
 
   public EnqueueResult enqueue(NewJob newJob) {
+    // Reject typos up front instead of letting the job fail later with "no handler".
+    if (!registry.isKnown(newJob.type())) {
+      throw new UnknownJobTypeException(newJob.type(), registry.types());
+    }
     var id = repo.insertIfAbsent(newJob);
     if (id.isPresent()) {
       return new EnqueueResult(repo.findById(id.get()).orElseThrow(), true);
