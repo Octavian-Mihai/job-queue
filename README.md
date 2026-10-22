@@ -368,19 +368,36 @@ it cannot pass vacuously.
 
 ## Project layout
 
-```
-src/main/java/dev/jobqueue/
-  api/       REST controllers, request/response types, RFC 7807 error handling
-  core/      job model, repositories, enqueue/cancel/DLQ services (explicit SQL)
-  worker/    claim query, worker loop, executor, heartbeat, reaper, lease SQL, fencing
-  retry/     backoff policy and per-type retry configuration (pure, unit-tested)
-  handler/   JobHandler SPI, registry, exceptions, demo handlers
-  metrics/   Micrometer metrics and queue gauges
-  config/    roles, properties, OpenAPI
-src/main/resources/db/migration/   Flyway schema
-docker/                            Prometheus config, Grafana provisioning and dashboard
-loadtest/                          k6 script, run/collect/summarize scripts, raw results, RESULTS.md
-```
+| Path | Purpose |
+|---|---|
+| `src/main/java/dev/jobqueue/api/` | REST controllers, request/response types, RFC 7807 error handling |
+| `src/main/java/dev/jobqueue/core/` | Job model, repositories, enqueue/cancel/DLQ services (explicit SQL) |
+| `src/main/java/dev/jobqueue/worker/` | Claim query, worker loop, executor, heartbeat, reaper, lease SQL, fencing |
+| `src/main/java/dev/jobqueue/retry/` | Backoff policy and per-type retry configuration (pure, unit-tested) |
+| `src/main/java/dev/jobqueue/handler/` | `JobHandler` SPI, registry, exceptions, demo handlers |
+| `src/main/java/dev/jobqueue/metrics/` | Micrometer metrics and queue gauges |
+| `src/main/java/dev/jobqueue/config/` | Roles, properties, OpenAPI |
+| `src/main/resources/db/migration/` | Flyway schema |
+| `src/test/java/dev/jobqueue/` | Repository, fencing, multi-worker, crash-recovery and API tests (Testcontainers) |
+| `docker/`, `docker-compose.yml` | Prometheus config, Grafana provisioning and dashboard, the local stack |
+| `loadtest/` | k6 script, run/collect/summarize scripts, raw results, `RESULTS.md` |
+| `docs/` | Dashboard screenshots used above |
+
+## Design patterns
+
+- **Competing consumers on a database.** Workers claim batches with `SELECT ... FOR UPDATE SKIP LOCKED`, so many workers pull
+  from one table without blocking each other.
+- **Lease plus fencing token.** A job is owned by a lease that a heartbeat extends; every complete, fail or extend is fenced
+  against the current lease, so a stalled worker cannot overwrite the new owner.
+- **Explicit state machine.** `JobStatus` allows only the transitions in the diagram above, enforced in SQL.
+- **Idempotent enqueue.** `INSERT ... ON CONFLICT` on an idempotency key returns the existing job instead of a duplicate.
+- **Strategy and SPI.** `JobHandler` plus `HandlerRegistry` let new job types plug in; `BackoffPolicy` and `RetryPolicies`
+  select retry behavior per type.
+- **Failure classification.** `FailureClassifier` and the `Retryable`/`NonRetryable` exceptions decide retry versus dead letter.
+- **One codebase, selectable roles.** `@ConditionalOnRole` turns the API and worker components on or off from
+  `JOBQUEUE_ROLES`.
+- **Reaper as a janitor.** A separate loop reclaims expired leases rather than making workers police each other.
+- **Dead-letter queue with replay.** Exhausted jobs are copied to `dead_letter_jobs`, inspectable and replayable.
 
 ## License
 
